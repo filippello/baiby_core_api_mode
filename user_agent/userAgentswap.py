@@ -41,7 +41,9 @@ async def send_transaction_to_api(transaction):
     tx_data = {
         "safeAddress": str(transaction.sender),
         "erc20TokenAddress": "EGLD",
-        "reason": "need to swap EGLD to ASH token",
+        #"reason": "need to swap EGLD to ASH token",
+        "reason": "need to to do a safe long term investment",
+        #"reason": "i want to do a investment to get a good return, no matter the risk" ,
         "transactions": [{
             "to": str(transaction.receiver),
             "data": transaction.data.decode() if transaction.data else "",

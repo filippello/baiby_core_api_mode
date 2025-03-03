@@ -8,6 +8,10 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+TOKEN_MAPPINGS = {
+    "ASH-e3d1b7": "ASH-a642d1"  # Mapeo del token ASH
+}
+
 def decode_data(data: str):
     """
     Decodifica el data de la transacción para obtener el token identifier
@@ -41,37 +45,55 @@ def decode_data(data: str):
 
 def get_token_id_from_identifier(token_identifier, platform="multiversx"):
     """
-    Obtiene el token ID de CoinGecko usando el identificador del token
+    Obtiene la información del token desde la API de MultiversX
     """
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{platform}/contract/{token_identifier}"
-        response = requests.get(url)
+        # Verificar si el token necesita ser mapeado
+        token_identifier = TOKEN_MAPPINGS.get(token_identifier, token_identifier)
+            
+        # Para MultiversX, obtener la información del token
+        mvx_api_url = f"https://api.multiversx.com/tokens/{token_identifier}"
+        response = requests.get(mvx_api_url)
         
-        if response.status_code == 200:
-            data = response.json()
-            return data["id"]
-        else:
+        if response.status_code != 200:
             logger.error(f"Error {response.status_code}: {response.text}")
             return None
+            
+        token_data = response.json()
+        
+        # Construir un objeto con la información relevante
+        token_info = {
+            "name": token_data.get("name", "Unknown Token"),
+            "symbol": token_data.get("ticker", token_identifier),
+            "id": token_identifier,
+            "platform": "multiversx"
+        }
+        
+        logger.info(f"Token info obtenida: {token_info}")
+        return token_info
+        
     except Exception as e:
-        logger.error(f"Error getting token ID: {e}")
+        logger.error(f"Error getting token info: {e}")
         return None
 
-def get_market_data(token_id, vs_currency="usd", days=30):
+def get_market_data(token_id, days=90):
     """
-    Obtiene datos de mercado de CoinGecko
+    Obtiene datos históricos del token desde CoinGecko
     """
+    #pasar a lowercase
+    token_id = token_id.lower() 
+    print("token_id "+token_id)
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{token_id}/market_chart"
         params = {
-            "vs_currency": vs_currency,
+            "vs_currency": "usd",
             "days": days,
             "interval": "daily"
         }
         response = requests.get(url, params=params)
-        
         if response.status_code != 200:
-            raise Exception(f"Error getting market data: {response.status_code}")
+            logger.error(f"Error getting market data: {response.text}")
+            return None
             
         return response.json()
     except Exception as e:
@@ -91,17 +113,18 @@ def calculate_volatility(df):
         return None, None
         
     daily_vol = df["returns"].std()
-    annual_vol = daily_vol * np.sqrt(365)
+    annual_vol = daily_vol * np.sqrt(90)
     return daily_vol, annual_vol
 
 def assess_risk(volatility, amount=None):
+    print("volatility "+str(volatility))
     try:
         risk_level = "LOW"
         
         # Riesgo por volatilidad
-        if volatility > 0.5:
+        if volatility > 0.4:
             risk_level = "HIGH"
-        elif volatility > 0.3:
+        elif volatility > 0.2:
             risk_level = "MEDIUM"
             
         # Ajustar por cantidad si está disponible
@@ -123,28 +146,33 @@ def calculate_ash_risk(data: str):
         if not token_identifier:
             return None
             
-        # Obtener token ID de CoinGecko
-        token_id = get_token_id_from_identifier(token_identifier)
-        if not token_id:
-            logger.warning(f"No se pudo obtener el token ID para {token_identifier}")
+        # Obtener información del token
+        token_info = get_token_id_from_identifier(token_identifier)
+        if not token_info:
+            logger.warning(f"No se pudo obtener información para el token {token_identifier}")
             return "UNKNOWN"
             
         # Obtener datos de mercado
-        market_data = get_market_data(token_id)
-        if not market_data:
+        data = get_market_data(token_info["name"], days=90)  # 3 meses de datos
+        if not data:
             return "UNKNOWN"
             
-        # Calcular volatilidad
-        df = process_data(market_data)
+        # Procesar datos y calcular volatilidad
+        df = process_data(data)
         daily_vol, annual_vol = calculate_volatility(df)
         
-        # Calcular amount si está disponible
-        amount = int(amount_hex, 16) if amount_hex else None
-        
-        # Evaluar riesgo
-        risk_level = assess_risk(annual_vol, amount)
-        
-        logger.info(f"Risk Analysis - Token: {token_identifier}, ID: {token_id}, Volatility: {annual_vol:.4f}, Risk: {risk_level}")
+        if annual_vol is None:
+            return "UNKNOWN"
+            
+        # Evaluar riesgo basado en volatilidad
+        if annual_vol >= 0.4:
+            risk_level = "HIGH"
+        elif annual_vol >= 0.2:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+            
+        logger.info(f"Risk Analysis - Token: {token_info['name']}, Volatility: {annual_vol:.4f}, Risk: {risk_level}")
         return risk_level
         
     except Exception as e:
