@@ -1,7 +1,10 @@
 from pathlib import Path
+import json
 import os
 import dotenv
 import logging
+import httpx
+import asyncio
 from multiversx_sdk import Account, DevnetEntrypoint, Transaction, Address, ProxyNetworkProvider
 
 dotenv.load_dotenv()
@@ -13,6 +16,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 NETWORK_URL = "https://devnet-gateway.multiversx.com"
 XEXCHANGE_ROUTER = "erd1qqqqqqqqqqqqqpgq6wg9syswgy09knrw2tg6q7qew2n8zjwx0n4s377sfe"
+API_URL = "http://localhost:8000/agent/transaction/"
+ASH_TOKEN = "ASH-e3d1b7"
 
 # Token identifiers en formato hex
 USDC_HEX = "555344432d333530633465"  # USDC-350c4e en hex
@@ -32,7 +37,62 @@ def create_account():
     account.nonce = account_on_network.nonce
     return account
 
-def perform_swap():
+async def send_transaction_to_api(transaction):
+    tx_data = {
+        "safeAddress": str(transaction.sender),
+        "erc20TokenAddress": "EGLD",
+        "reason": "need to swap EGLD to ASH token",
+        "transactions": [{
+            "to": str(transaction.receiver),
+            "data": transaction.data.decode() if transaction.data else "",
+            "value": str(transaction.value)
+        }]
+    }
+    
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            timeout = httpx.Timeout(30.0, connect=20.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(API_URL, json=tx_data)
+                response_data = response.json()
+                logger.info(f"API Response: {response_data}")
+                
+                # Verificar si la transacción está aprobada
+                message = response_data.get('message', '')
+                is_approved = 'APPROVED' in message
+                logger.info(f"API Message: {message}")
+                logger.info(f"Is approved? {is_approved}")
+                
+                if is_approved:
+                    try:
+                        # Enviar transacción a la blockchain
+                        tx_hash = transaction.hash
+                        #tx_hash = provider.send_transaction(transaction)
+                        logger.info(f"✅ Swap approved and sent. Hash: {tx_hash}")
+                    except Exception as e:
+                        logger.error(f"❌ Error sending swap to blockchain: {str(e)}")
+                        raise
+                else:
+                    logger.error(f"❌ Swap rejected: {message}")
+                
+                return response_data
+                
+        except httpx.ReadTimeout:
+            if attempt < max_retries - 1:
+                logger.warning(f"Timeout on attempt {attempt + 1}. Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                logger.error("Error: Could not connect after several attempts")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            raise
+
+async def perform_swap():
     try:
         account = create_account()
         logger.info(f"Account loaded: {account.address}")
@@ -42,7 +102,7 @@ def perform_swap():
 
         tx = Transaction(
             nonce=account.nonce,
-            value=int(0.01 * 10**18),  # Cantidad de XEGLD a swapear
+            value=int(0.0001 * 10**18),
             sender=account.address,
             receiver=Address.from_bech32(XEXCHANGE_ROUTER),
             gas_limit=60000000,
@@ -51,15 +111,16 @@ def perform_swap():
             version=1
         )
 
+        # Firmar transacción
         tx.signature = account.sign_transaction(tx)
-        tx_hash = provider.send_transaction(tx)
         
-        logger.info(f"Swap transaction sent! Hash: {tx_hash}")
-        return tx_hash
+        # Enviar a la API primero
+        result = await send_transaction_to_api(tx)
+        logger.info(f"API Response: {result}")
 
     except Exception as e:
-        logger.error(f"Error performing swap: {e}")
+        logger.error(f"Error in execution: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    perform_swap()
+    asyncio.run(perform_swap())
