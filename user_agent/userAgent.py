@@ -20,20 +20,30 @@ GAS_LIMIT = 50000
 provider = ProxyNetworkProvider(PROVIDER_URL)
 
 def create_account():
-    entrypoint = DevnetEntrypoint()
-    account = Account.new_from_keystore(
-        file_path=Path("user_agent/wallet.json"),
-        password=os.getenv("WALLET_PASSWORD")
-    )
-    account_on_network = provider.get_account(account.address)
-    account.nonce = account_on_network.nonce
-    return account
+    try:
+        # Obtener la ruta absoluta del directorio actual
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        wallet_path = os.path.join(current_dir, "wallet.json")
+        
+        if not os.path.exists(wallet_path):
+            raise FileNotFoundError(f"No se encuentra el archivo wallet.json en {wallet_path}")
+            
+        account = Account.new_from_keystore(
+            file_path=Path(wallet_path),
+            password=os.getenv("WALLET_PASSWORD")
+        )
+        account_on_network = provider.get_account(account.address)
+        account.nonce = account_on_network.nonce
+        return account
+    except Exception as e:
+        print(f"❌ Error creando la cuenta: {str(e)}")
+        raise
 
 async def send_transaction_to_api(transaction):
     tx_data = {
         "safeAddress": str(transaction.sender),
         "erc20TokenAddress": "EGLD",
-        "reason": "need to transfer all EGLD, to start a new wallet",
+        "reason": os.getenv('TRANSACTION_REASON', "need to transfer all EGLD, to start a new wallet"),
         "transactions": [{
             "to": str(transaction.receiver),
             "data": transaction.data.decode() if transaction.data else "",
